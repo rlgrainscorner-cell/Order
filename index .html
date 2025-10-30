@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="tl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="page-title">Digital Menu</title>
+    <!-- Tailwind CSS CDN para sa modern at responsive styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font na gagamitin -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Firebase Libraries Import -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"; // Optional logging
+
+        // --- GLOBAL VARIABLES (Provided by Canvas Environment) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // --- FIREBASE INITIALIZATION ---
+        let db;
+        let auth;
+        let userId = 'anon_user'; 
+        const MENU_COLLECTION_PATH = `artifacts/${appId}/users/`;
+        const CONFIG_DOC_ID = 'menu_config';
+
+        // Default configuration (Title, Colors, and Menu Items)
+        const defaultConfig = {
+            title: 'Menu ni Mesita',
+            colorRed: '#da291c',
+            colorYellow: '#ffc72c',
+            colorCream: '#fffdee',
+            welcomeHeading: 'Welcome, Bida ang Saya!',
+            welcomeSubtext: 'Piliin ang inyong paborito! I-scroll lang pababa para makita ang kumpletong menu.',
+            orderButtonText: 'I-CHECKOUT ANG ORDER', // Used for Cart Button now
+            orderSubtext: 'I-click ang button para mag-order sa Messenger.',
+            messengerPageUsername: 'PangalanNgIyongPage', // NEW: Messenger username
+            items: [
+                // Note: Added defaultQuantity for Cart feature
+                { id: 'item-1', category: 'Chickenjoy & Rice Meals', name: 'Chickenjoy 1pc. w/ Rice', price: '82.00', description: 'Ang pinakapaboritong chicken, juicy at crispy, served with rice and gravy.', image: 'Chickenjoy' },
+                { id: 'item-2', category: 'Chickenjoy & Rice Meals', name: 'Jolly Spaghetti', price: '65.00', description: 'Sweet-style sauce with generous hotdogs and cheese.', image: 'Spaghetti' },
+                { id: 'item-3', category: 'Chickenjoy & Rice Meals', name: 'Burger Steak', price: '70.00', description: 'Savory patty na may mushroom gravy at rice.', image: 'Burger+Steak' },
+                { id: 'item-4', category: 'Burgers & Sandwiches', name: 'Yum Burger', price: '40.00', description: 'Classic beef patty na may sarap na hinahanap-hanap!', image: 'Yum+Burger' },
+                { id: 'item-5', category: 'Burgers & Sandwiches', name: 'Jolly Hotdog', price: '57.00', description: 'Savory hotdog sa soft bun, topped with delicious dressing.', image: 'Hotdog' },
+                { id: 'item-6', category: 'Desserts & Beverages', name: 'Peach Mango Pie', price: '40.00', description: 'Golden, flaky pie filled with real peach and mango chunks. Tamang-tama sa panghimagas!', image: 'Pie' },
+                { id: 'item-7', category: 'Desserts & Beverages', name: 'Fries (Large)', price: '60.00', description: 'Crispy, golden-brown fries.', image: 'Fries' }
+            ]
+        };
+        
+        let currentConfig = defaultConfig; // Variable to hold the loaded config
+        let cart = []; // Global cart state
+
+        // --- AUTH & DB SETUP ---
+        async function setupFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                
+                userId = auth.currentUser?.uid || crypto.randomUUID();
+                console.log("Firebase initialized. User ID:", userId);
+
+                await loadConfigAndRender();
+
+            } catch (error) {
+                console.error("Error setting up Firebase:", error);
+                document.getElementById('status-message').textContent = 'Error loading app. Please check console.';
+            }
+        }
+
+        // --- FIRESTORE DATA FUNCTIONS ---
+        const getMenuConfigRef = () => doc(db, MENU_COLLECTION_PATH, userId, 'config', CONFIG_DOC_ID);
+
+        async function loadConfigAndRender() {
+            const docRef = getMenuConfigRef();
+            const docSnap = await getDoc(docRef);
+
+            if (docSnap.exists()) {
+                // Merge loaded data with defaults in case new fields were added
+                currentConfig = { ...defaultConfig, ...docSnap.data() };
+                currentConfig.items = currentConfig.items || defaultConfig.items;
+                console.log("Config loaded from Firestore.");
+            } else {
+                // Initialize Firestore with default data
+                await setDoc(docRef, defaultConfig);
+                currentConfig = defaultConfig;
+                console.log("Using default config and initialized Firestore.");
+            }
+            
+            // Sort menu items by category
+            currentConfig.items.sort((a, b) => a.category.localeCompare(b.category)); 
+            
+            applyColors(currentConfig); // Apply colors immediately
+            renderAll(currentConfig); // Render header, panel, and menu
+            renderCartButton(); // Ensure cart button is rendered after config load
+        }
+
+        // Generic function to update a single config field (Title, Color, or Text)
+        async function updateConfigInFirestore(field, value) {
+            if (!db) return;
+            const docRef = getMenuConfigRef();
+            
+            // 1. Update local config and apply immediate changes
+            currentConfig[field] = value;
+            if (field.startsWith('color')) {
+                applyColors(currentConfig);
+            }
+            if (field === 'title') {
+                document.getElementById('page-title').textContent = value;
+            }
+            
+            // 2. Update the document directly in Firestore
+            await updateDoc(docRef, { [field]: value });
+            console.log(`Updated config field ${field} to ${value}`);
+        }
+
+        // Function to update a single field of a menu item
+        async function updateMenuItemInFirestore(itemId, field, value) {
+            if (!db) return;
+
+            // 1. Find and update the specific item in the local array
+            const itemIndex = currentConfig.items.findIndex(item => item.id === itemId);
+            if (itemIndex !== -1) {
+                let updatedValue = value;
+                
+                if (field === 'price') {
+                    const numericValue = parseFloat(String(value).replace(/[^0-9.]/g, ''));
+                    updatedValue = isNaN(numericValue) ? currentConfig.items[itemIndex][field] : numericValue.toFixed(2);
+                } else if (field === 'image') {
+                     updatedValue = String(value).trim();
+                }
+                
+                currentConfig.items[itemIndex][field] = updatedValue;
+
+                // 2. Save the updated array back to Firestore
+                currentConfig.items.sort((a, b) => a.category.localeCompare(b.category)); 
+                await setDoc(getMenuConfigRef(), currentConfig);
+                console.log(`Updated item ${itemId}: ${field} to ${updatedValue}`);
+                
+                // Re-render the menu.
+                renderMenu(currentConfig.items, document.getElementById('menu-list').classList.contains('edit-mode')); 
+            }
+        }
+        
+        // Function to handle category name updates
+        async function handleCategoryEditSave(event) {
+            const target = event.target;
+            const oldCategory = target.getAttribute('data-category-old');
+            const newCategory = target.textContent.trim();
+            
+            if (oldCategory && newCategory && oldCategory !== newCategory) {
+                // 1. Update all affected items in the local config
+                let changesMade = false;
+                currentConfig.items = currentConfig.items.map(item => {
+                    if (item.category === oldCategory) {
+                        item.category = newCategory;
+                        changesMade = true;
+                    }
+                    return item;
+                });
+
+                if (changesMade) {
+                    // 2. Sort and save the entire configuration
+                    currentConfig.items.sort((a, b) => a.category.localeCompare(b.category)); 
+                    await setDoc(getMenuConfigRef(), currentConfig)
+                        .then(() => {
+                            console.log(`Updated category '${oldCategory}' to '${newCategory}' and saved.`);
+                            // 3. Re-render the whole app to show changes and update data-attributes
+                            loadConfigAndRender();
+                        })
+                        .catch(error => {
+                            console.error("Error updating category:", error);
+                        });
+                } else {
+                    loadConfigAndRender(); 
+                }
+            } else {
+                 loadConfigAndRender();
+            }
+        }
+
+        // --- CART LOGIC ---
+        window.addToCart = function(itemId) {
+            const item = currentConfig.items.find(i => i.id === itemId);
+            if (!item) return;
+
+            const existingCartItem = cart.find(c => c.id === itemId);
+
+            if (existingCartItem) {
+                existingCartItem.quantity++;
+            } else {
+                cart.push({
+                    id: item.id,
+                    name: item.name,
+                    price: parseFloat(item.price),
+                    quantity: 1
+                });
+            }
+            console.log("Cart updated:", cart);
+            renderCartButton();
+            renderCart();
+        }
+
+        window.updateCartQuantity = function(itemId, change) {
+            const cartItemIndex = cart.findIndex(c => c.id === itemId);
+            if (cartItemIndex === -1) return;
+
+            cart[cartItemIndex].quantity += change;
+
+            if (cart[cartItemIndex].quantity <= 0) {
+                cart.splice(cartItemIndex, 1); // Remove item if quantity is zero or less
+            }
+            
+            renderCartButton();
+            renderCart();
+        }
+        
+        window.openCartModal = function() {
+            document.getElementById('cart-modal').classList.remove('hidden');
+            renderCart();
+        }
+        
+        window.closeCartModal = function() {
+            document.getElementById('cart-modal').classList.add('hidden');
+        }
+
+        function generateOrderSummary() {
+            if (cart.length === 0) return "Walang laman ang iyong order. Paki-pili ang inyong paborito sa menu. Salamat!";
+
+            let summary = "🎉 Bagong Order mula sa Menu ni Mesita!\n\n";
+            summary += "--- ITEMS ---\n";
+            let total = 0;
+
+            cart.forEach((item, index) => {
+                const subtotal = item.price * item.quantity;
+                total += subtotal;
+                summary += `${index + 1}. (${item.quantity}x) ${item.name} | ₱${subtotal.toFixed(2)}\n`;
+            });
+
+            summary += "\n--------------------";
+            summary += `\nSubtotal: ₱${total.toFixed(2)}`;
+            summary += "\n--------------------\n";
+            summary += "\n*PAALALA: Pakibigay ng kumpletong pangalan, address, at contact number para sa pag-deliver. Salamat!*";
+            
+            return summary;
+        }
+
+        window.copyToClipboardAndChat = function() {
+            const orderText = generateOrderSummary();
+            const messengerUsername = currentConfig.messengerPageUsername;
+
+            // 1. Copy to clipboard
+            try {
+                // Use execCommand for broader compatibility in iFrames
+                const textarea = document.createElement('textarea');
+                textarea.value = orderText;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+
+                document.getElementById('modal-status-text').textContent = '✅ Order Kopyado! Paki-PASTE sa Messenger Chat (Dapat may pop-up na magbubukas).';
+                
+                // 2. Redirect to Messenger after a short delay
+                setTimeout(() => {
+                    if (messengerUsername && messengerUsername !== 'PangalanNgIyongPage') {
+                         window.open(`https://m.me/${messengerUsername}`, '_blank');
+                    } else {
+                        document.getElementById('modal-status-text').textContent = '⚠️ Walang Messenger Link. Paki-edit ang "Messenger Page Username" sa Admin Mode.';
+                    }
+                    // Do NOT close the modal immediately, let the user see the "Paki-PASTE" message.
+                    // But clear the cart anyway.
+                    // closeCartModal(); 
+                    cart = []; // Clear cart after successful 'order' attempt
+                    renderCartButton();
+                }, 1500);
+
+            } catch (err) {
+                console.error('Copy to clipboard failed:', err);
+                document.getElementById('modal-status-text').textContent = '❌ Hindi na-copy. Paki-manual copy ang text at mag-chat sa Messenger.';
+            }
+        }
+
+
+        // --- STYLING FUNCTIONS ---
+        function applyColors(config) {
+            const root = document.documentElement;
+            root.style.setProperty('--jolly-red', config.colorRed);
+            root.style.setProperty('--jolly-yellow', config.colorYellow);
+            root.style.setProperty('--jolly-cream', config.colorCream);
+            document.getElementById('page-title').textContent = config.title;
+        }
+
+        // --- EVENT HANDLERS ---
+        function handleConfigEditKeydown(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault(); 
+                handleConfigEditSave(e);
+                e.target.blur();
+            }
+        }
+        
+        function handleCategoryEditKeydown(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault(); 
+                handleCategoryEditSave(e);
+                e.target.blur();
+            }
+        }
+        
+        function handleConfigEditSave(event) {
+            const target = event.target;
+            const field = target.getAttribute('data-field');
+            const newValue = target.textContent.trim();
+            if (field) {
+                updateConfigInFirestore(field, newValue);
+            }
+        }
+
+        function handleColorChange(event) {
+            const target = event.target;
+            const field = target.getAttribute('data-field');
+            const newValue = target.value;
+            if (field) {
+                updateConfigInFirestore(field, newValue);
+                target.nextElementSibling.textContent = newValue; // Update hex code display
+            }
+        }
+        
+        function handleMenuItemEditSave(event) {
+            const target = event.target;
+            const itemId = target.getAttribute('data-id');
+            const field = target.getAttribute('data-field');
+            const newValue = target.textContent.trim();
+            
+            if (itemId && field) {
+                updateMenuItemInFirestore(itemId, field, newValue);
+            }
+        }
+        
+
+        function renderAll(config) {
+            const menuList = document.getElementById('menu-list');
+            const isEditMode = menuList.classList.contains('edit-mode');
+            document.getElementById('status-message').style.display = 'none';
+
+            // --- CONFIG TEXTS AND HEADINGS ---
+            const configTextElements = [
+                { id: 'header-title', field: 'title' },
+                { id: 'welcome-heading', field: 'welcomeHeading' },
+                { id: 'welcome-subtext', field: 'welcomeSubtext' },
+                { id: 'order-btn-text', field: 'orderButtonText' },
+                { id: 'order-subtext', field: 'orderSubtext' },
+                { id: 'messenger-username-display', field: 'messengerPageUsername' }, // New Messenger field
+            ];
+
+            // Render Config Texts (Editable if in Admin Mode)
+            configTextElements.forEach(({ id, field }) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.textContent = config[field];
+                    el.contentEditable = isEditMode ? 'true' : 'false';
+                    el.classList.toggle('editable-config', isEditMode);
+                    el.dataset.field = field;
+                    
+                    // Attach listeners only if in edit mode
+                    if (isEditMode) {
+                        el.removeEventListener('blur', handleConfigEditSave);
+                        el.removeEventListener('keydown', handleConfigEditKeydown);
+                        
+                        el.addEventListener('blur', handleConfigEditSave);
+                        el.addEventListener('keydown', handleConfigEditKeydown);
+                    }
+                }
+            });
+            
+            // Render Admin Panel (Colors)
+            renderAdminPanel(config, isEditMode);
+
+            // Render Menu Items and Categories
+            renderMenu(config.items, isEditMode);
+        }
+
+        function renderAdminPanel(config, isEditMode) {
+            const adminPanel = document.getElementById('admin-panel');
+            if (!isEditMode) {
+                adminPanel.innerHTML = '';
+                adminPanel.classList.add('hidden');
+                return;
+            }
+            adminPanel.classList.remove('hidden');
+
+            adminPanel.innerHTML = `
+                <div class="p-4 bg-white rounded-xl shadow-lg border-2 border-jolly-red mb-8">
+                    <h4 class="text-xl font-bold text-jolly-red mb-4">⚙️ Admin Settings</h4>
+                    
+                    <!-- Color Settings -->
+                    <div class="mb-6">
+                        <h5 class="text-lg font-semibold text-gray-700 mb-2">🎨 Colors</h5>
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            ${renderColorInput('colorRed', 'Main Accent Red', config.colorRed)}
+                            ${renderColorInput('colorYellow', 'Secondary Accent Yellow', config.colorYellow)}
+                            ${renderColorInput('colorCream', 'Background Cream', config.colorCream)}
+                        </div>
+                    </div>
+                    
+                    <!-- Messenger Link Setting -->
+                    <div>
+                        <h5 class="text-lg font-semibold text-gray-700 mb-2">💬 Messenger Page Username</h5>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Ito ang gagamitin para sa "Copy Order and Chat" button.</label>
+                        <div class="flex items-center space-x-2 p-2 bg-yellow-100 rounded-lg">
+                            <span class="text-sm font-mono text-gray-600">
